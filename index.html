@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 图像生成器 - Midapi AI Proxy</title>
+    <style>
+        /* 样式代码省略 */
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f4f7f6; color: #333; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+        .container { background-color: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08); width: 100%; max-width: 700px; box-sizing: border-box; margin-bottom: 20px; }
+        h1 { color: #2c3e50; text-align: center; margin-bottom: 25px; font-size: 2.2em; }
+        label { display: block; margin-bottom: 8px; font-weight: bold; color: #555; }
+        textarea { width: calc(100% - 20px); padding: 12px; margin-bottom: 20px; border: 1px solid #ccc; border-radius: 8px; font-size: 1em; resize: vertical; min-height: 100px; box-sizing: border-box; transition: border-color 0.3s ease; }
+        button { background-color: #007bff; color: white; padding: 12px 25px; border: none; border-radius: 8px; cursor: pointer; font-size: 1.1em; font-weight: bold; transition: background-color 0.3s ease, transform 0.2s ease; width: 100%; }
+        button:disabled { background-color: #cccccc; cursor: not-allowed; }
+        #status { margin-top: 20px; text-align: center; font-size: 1.1em; color: #555; min-height: 25px; }
+        #resultImage { max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1); margin-top: 15px; display: none; }
+        .loading-spinner { border: 4px solid #f3f3f3; border-top: 4px solid #007bff; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; display: none; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>✨ AI 艺术生成器 (Proxy) ✨</h1>
+        <form id="imageGenForm">
+            <label for="prompt">输入您想生成的图片描述:</label>
+            <textarea id="prompt" placeholder="制作一幅精美的中国风山水画,要有意境,高山,流水,小径,行者,茅草屋,炊烟,大雪,水墨丹青。" required></textarea>
+            <button type="submit" id="generateBtn">生成图片 (通过 Worker)</button>
+        </form>
+        <div id="status"></div>
+    </div>
+
+    <div class="container" id="imageContainer">
+        <label>生成结果:</label>
+        <div class="loading-spinner" id="spinner"></div>
+        <img id="resultImage" alt="生成的图片将显示在此处">
+        <p id="noImageMessage">暂无图片，请在上方输入描述并生成。</p>
+    </div>
+
+    <script>
+        const WORKER_URL = "https://midjourney-v7.tk709054540.workers.dev"; 
+        const API_PATH = '/'; // Worker 内部处理路由
+
+        const form = document.getElementById('imageGenForm');
+        const promptInput = document.getElementById('prompt');
+        const generateBtn = document.getElementById('generateBtn');
+        const statusDiv = document.getElementById('status');
+        const resultImage = document.getElementById('resultImage');
+        const spinner = document.getElementById('spinner');
+        const noImageMessage = document.getElementById('noImageMessage');
+        const POLL_INTERVAL = 3000; // 3 秒查询一次
+
+        // 轮询函数：查询任务状态
+        async function pollTaskStatus(taskId) {
+            statusDiv.textContent = `任务ID: ${taskId} | 正在查询中...`;
+            spinner.style.display = 'block';
+
+            try {
+                // 请求 Worker 的 /task/{taskId} 路径
+                const response = await fetch(WORKER_URL + '/task/' + taskId, { method: 'GET' });
+
+                if (!response.ok) {
+                    throw new Error(`查询失败，状态码: ${response.status}`);
+                }
+
+                const data = await response.json();
+                const task = data.data; // Midapi AI 返回的 data.data 是任务详情
+
+                if (task && task.status === 'SUCCESS' && task.imageUrl) {
+                    // 任务成功完成
+                    clearInterval(window.pollTimer);
+                    resultImage.src = task.imageUrl;
+                    resultImage.style.display = 'block';
+                    statusDiv.textContent = `✅ 图片生成成功！`;
+                    noImageMessage.style.display = 'none';
+                    generateBtn.disabled = false;
+                    spinner.style.display = 'none';
+                } else if (task && (task.status === 'PROCESSING' || task.status === 'QUEUED')) {
+                    // 任务仍在进行中
+                    const progress = task.progress ? `${task.progress}%` : '等待中...';
+                    statusDiv.textContent = `任务ID: ${taskId} | 进度: ${progress}`;
+                } else if (task && task.status === 'FAILURE') {
+                    // 任务失败
+                    clearInterval(window.pollTimer);
+                    throw new Error(`任务失败：${task.failReason || '未知错误'}`);
+                }
+            } catch (error) {
+                clearInterval(window.pollTimer);
+                statusDiv.textContent = `生成失败: ${error.message}`;
+                noImageMessage.textContent = `错误详情: ${error.message}`;
+                noImageMessage.style.display = 'block';
+                generateBtn.disabled = false;
+                spinner.style.display = 'none';
+            }
+        }
+
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault(); 
+            const prompt = promptInput.value.trim();
+            
+            // ... (UI 状态设置) ...
+            generateBtn.disabled = true;
+            statusDiv.textContent = "正在通过 Worker 代理发送请求...";
+            spinner.style.display = 'block';
+            resultImage.style.display = 'none';
+            noImageMessage.style.display = 'none'; 
+            resultImage.src = ''; 
+
+            const requestBody = { "taskType": "mj_txt2img", "prompt": prompt, "speed": "relaxed", "aspectRatio": "16:9", "version": "7" };
+
+            try {
+                // 1. 提交任务 (POST)
+                const response = await fetch(WORKER_URL + API_PATH, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody) 
+                });
+
+                if (!response.ok) {
+                    let errorData;
+                    try { errorData = await response.json(); } catch (e) { errorData = { message: `Worker返回错误状态码: ${response.status}` }; }
+                    throw new Error(errorData.message || errorData.details || "API 返回未知错误");
+                }
+
+                const data = await response.json(); 
+                const taskId = data.data ? data.data.taskId : null;
+
+                if (taskId) {
+                    // 2. 任务提交成功，开始轮询
+                    statusDiv.textContent = `✅ 请求成功提交 (任务ID: ${taskId})。Midapi AI 正在处理中...`;
+                    noImageMessage.textContent = "图片正在生成中，请等待几秒钟...";
+                    noImageMessage.style.display = 'block';
+                    
+                    // 启动轮询
+                    window.pollTimer = setInterval(() => pollTaskStatus(taskId), POLL_INTERVAL);
+
+                } else {
+                    // 任务提交成功但缺少 ID
+                    statusDiv.textContent = `API 提交成功，但响应格式意外。`;
+                    noImageMessage.textContent = JSON.stringify(data, null, 2);
+                    noImageMessage.style.display = 'block';
+                    generateBtn.disabled = false;
+                    spinner.style.display = 'none';
+                }
+
+            } catch (error) {
+                // 提交任务失败
+                if(window.pollTimer) clearInterval(window.pollTimer);
+                statusDiv.textContent = `生成失败: ${error.message}`;
+                noImageMessage.textContent = `错误详情: ${error.message}`;
+                noImageMessage.style.display = 'block';
+                generateBtn.disabled = false; 
+                spinner.style.display = 'none'; 
+            }
+        });
+    </script>
+</body>
+</html>
